@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Video Debug</title>
+  <style>
+    body { font-family: monospace; background: #111; color: #0f0; padding: 16px; font-size: 13px; }
+    video { width: 100%; max-width: 500px; display: block; margin: 16px 0; background: #000; }
+    #log { white-space: pre-wrap; background: #000; padding: 12px; border: 1px solid #333; max-height: 60vh; overflow-y: auto; }
+    button { background: #333; color: #fff; border: none; padding: 10px 18px; margin: 4px; cursor: pointer; border-radius: 6px; }
+    input { background: #222; color: #fff; border: 1px solid #555; padding: 8px; width: 100%; box-sizing: border-box; margin: 8px 0; }
+    .ok { color: #0f0; } .err { color: #f44; } .warn { color: #fa0; }
+  </style>
+</head>
+<body>
+<h3>🎬 Safari Video Debug</h3>
+<p id="ua" style="color:#888;font-size:11px"></p>
+<p id="sw-status" style="color:#fa0">SW: checking...</p>
+
+<video id="v" controls playsinline webkit-playsinline></video>
+
+<button onclick="testSwProxy()">Test SW Proxy (/sw-video/test)</button>
+<button onclick="testBlobUrl()">Test Blob URL</button>
+<button onclick="testIDB()">Check IDB Videos</button>
+<button onclick="clearLog()">Clear Log</button>
+
+<div id="log">Ready.\n</div>
+
+<script>
+const logEl = document.getElementById('log');
+function log(msg, cls='') {
+  const ts = new Date().toISOString().substr(11,12);
+  const line = document.createElement('div');
+  if (cls) line.className = cls;
+  line.textContent = `[${ts}] ${msg}`;
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+// Show UA
+document.getElementById('ua').textContent = navigator.userAgent;
+
+// SW status
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.getRegistration('./').then(reg => {
+    if (reg) {
+      const sw = reg.active || reg.installing || reg.waiting;
+      const el = document.getElementById('sw-status');
+      el.textContent = `SW: registered (${sw ? sw.state : 'none'}) scope=${reg.scope}`;
+      el.style.color = reg.active ? '#0f0' : '#fa0';
+      log(`SW scope: ${reg.scope}`, 'ok');
+      log(`SW state: ${sw ? sw.state : 'none'}`, sw && sw.state==='activated' ? 'ok' : 'warn');
+    } else {
+      document.getElementById('sw-status').textContent = 'SW: NOT registered';
+      document.getElementById('sw-status').style.color = '#f44';
+      log('No SW registered! SW proxy will not work.', 'err');
+    }
+  });
+} else {
+  log('serviceWorker not supported', 'err');
+}
+
+async function attachVideoEvents(v, label) {
+  const events = ['loadstart','durationchange','loadedmetadata','loadeddata',
+                  'canplay','canplaythrough','playing','pause','ended','error','stalled','waiting','emptied'];
+  events.forEach(evt => {
+    v.addEventListener(evt, () => {
+      const dur = isNaN(v.duration) ? 'NaN' : v.duration.toFixed(2);
+      const ready = ['HAVE_NOTHING','HAVE_METADATA','HAVE_CURRENT_DATA','HAVE_FUTURE_DATA','HAVE_ENOUGH_DATA'][v.readyState] || v.readyState;
+      const cls = evt === 'error' ? 'err' : evt === 'stalled' || evt === 'waiting' ? 'warn' : 'ok';
+      log(`[${label}] ${evt} | duration=${dur}s | readyState=${ready} | buffered=${v.buffered.length}`, cls);
+      if (evt === 'error' && v.error) {
+        log(`  error.code=${v.error.code} message="${v.error.message}"`, 'err');
+      }
+    });
+  });
+}
+
+async function testSwProxy() {
+  log('--- Testing SW Proxy ---', 'warn');
+  
+  // First test if the SW intercepts the route at all
+  log('Fetching /sw-video/test.mp4 to see if SW responds...', 'warn');
+  try {
+    const res = await fetch('/sw-video/test.mp4');
+    log(`Fetch /sw-video/test.mp4 → ${res.status} ${res.statusText}`, res.status === 404 ? 'warn' : 'ok');
+    if (res.status === 404) log('  404 = SW is intercepting (no video with id "test" in IDB)', 'ok');
+    if (res.status === 200 || res.status === 404) log('  SW proxy IS active ✓', 'ok');
+  } catch(e) {
+    log(`Fetch failed: ${e.message} — SW may not be intercepting`, 'err');
+  }
+
+  // Test range request
+  log('Testing Range request to /sw-video/test.mp4...', 'warn');
+  try {
+    const res = await fetch('/sw-video/test.mp4', { headers: { Range: 'bytes=0-1' } });
+    log(`Range fetch → ${res.status} ${res.statusText}`, res.status === 206 || res.status === 404 ? 'ok' : 'err');
+    if (res.status === 206) log('  206 Partial Content ✓ Range requests work', 'ok');
+  } catch(e) {
+    log(`Range fetch failed: ${e.message}`, 'err');
+  }
+
+  // Now try playing the first real IDB video via SW proxy
+  const videos = await getAllIDBVideos();
+  if (!videos.length) { log('No videos in IDB to test with', 'warn'); return; }
+
+  const first = videos[0];
+  log(`Playing first IDB video via SW proxy: id="${first.id}" size=${(first.size/1e6).toFixed(1)}MB`, 'warn');
+  
+  const v = document.getElementById('v');
+  v.pause();
+  while(v.firstChild) v.removeChild(v.firstChild);
+  v.removeAttribute('src');
+  v.load();
+  attachVideoEvents(v, 'SW-proxy');
+
+  const src = document.createElement('source');
+  src.type = 'video/mp4';
+  src.src = `/sw-video/${encodeURIComponent(first.id)}.mp4`;
+  v.appendChild(src);
+  log(`Set src to: ${src.src}`, 'ok');
+  v.load();
+}
+
+async function testBlobUrl() {
+  log('--- Testing Blob URL ---', 'warn');
+  const videos = await getAllIDBVideos();
+  if (!videos.length) { log('No videos in IDB', 'warn'); return; }
+
+  const first = videos[0];
+  log(`Playing via blob URL: id="${first.id}"`, 'warn');
+
+  const blob = new Blob([first.blob], { type: 'video/mp4' });
+  const url  = URL.createObjectURL(blob);
+  log(`blob URL: ${url.substr(0,40)}...`, 'ok');
+
+  const v = document.getElementById('v');
+  v.pause();
+  while(v.firstChild) v.removeChild(v.firstChild);
+  v.removeAttribute('src');
+  v.load();
+  attachVideoEvents(v, 'blob');
+
+  const src = document.createElement('source');
+  src.type = 'video/mp4';
+  src.src  = url;
+  v.appendChild(src);
+  v.load();
+}
+
+async function getAllIDBVideos() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('ytoffline', 1);
+    req.onsuccess = (e) => {
+      const db  = e.target.result;
+      if (!db.objectStoreNames.contains('videos')) { resolve([]); return; }
+      const tx  = db.transaction('videos', 'readonly');
+      const req2 = tx.objectStore('videos').getAll();
+      req2.onsuccess = () => resolve(req2.result || []);
+      req2.onerror   = () => resolve([]);
+    };
+    req.onerror = () => resolve([]);
+  });
+}
+
+async function testIDB() {
+  log('--- Checking IndexedDB ---', 'warn');
+  const videos = await getAllIDBVideos();
+  log(`Found ${videos.length} video(s) in IDB`, videos.length ? 'ok' : 'warn');
+  videos.forEach((v, i) => {
+    const hasBlob = !!v.blob;
+    const blobSize = v.blob ? v.blob.size : 0;
+    const blobType = v.blob ? v.blob.type : 'N/A';
+    log(`  [${i}] id="${v.id}" title="${v.title}" storedSize=${(v.size/1e6).toFixed(1)}MB`, 'ok');
+    log(`       blob=${hasBlob} blobSize=${(blobSize/1e6).toFixed(1)}MB blobType="${blobType}"`, hasBlob ? 'ok' : 'err');
+  });
+}
+
+function clearLog() { logEl.innerHTML = ''; }
+</script>
+</body>
+</html>
