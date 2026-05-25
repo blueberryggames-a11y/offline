@@ -328,33 +328,49 @@ async function playVideo(id) {
 
   const player = document.getElementById("video-player");
 
-  // Safari requires the blob to have an explicit video/mp4 type
-  // Re-wrap the stored blob to guarantee the correct MIME type
-  const safariBlob = new Blob([video.blob], { type: "video/mp4" });
-  currentObjectURL = URL.createObjectURL(safariBlob);
-
-  // Set title/meta before switching view
-  document.getElementById("player-title").textContent = video.title;
-  document.getElementById("player-meta").textContent =
-    `${video.uploader || "Unknown"} · ${formatDuration(video.duration)} · ${formatSize(video.size)}`;
-
-  // Switch to player view first
-  showView("player");
-
-  // Reset player completely before assigning new src — Safari needs this
+  // FIX 1: Fully stop & detach any existing source before touching src
   player.pause();
   player.removeAttribute("src");
   player.load();
 
-  // Small delay lets Safari settle after load() before we assign a new src
-  await new Promise((r) => setTimeout(r, 50));
+  // Set title/meta
+  document.getElementById("player-title").textContent = video.title;
+  document.getElementById("player-meta").textContent =
+    `${video.uploader || "Unknown"} · ${formatDuration(video.duration)} · ${formatSize(video.size)}`;
 
+  // Switch to player view
+  showView("player");
+
+  // FIX 2: Re-wrap blob with explicit video/mp4 MIME type — required by Safari
+  const safariBlob = new Blob([video.blob], { type: "video/mp4" });
+  currentObjectURL = URL.createObjectURL(safariBlob);
+
+  // FIX 3: Assign src ONCE — no double load() — then wait for canplay before play()
+  // Safari is strict: assigning src then calling load() twice causes silent failure
   player.src = currentObjectURL;
-  player.load();
 
-  // Safari requires a user-gesture to call play() — tapping the card counts,
-  // but we catch the error silently if autoplay is blocked
-  player.play().catch(() => {});
+  // FIX 4: Use canplay event to trigger play, not a blind setTimeout.
+  // This is the correct way to autoplay on Safari/iOS after a user gesture.
+  player.addEventListener(
+    "canplay",
+    () => {
+      player.play().catch(() => {
+        // Autoplay blocked — user can tap the native controls to start
+      });
+    },
+    { once: true }
+  );
+
+  // FIX 5: Catch load errors and surface them instead of failing silently
+  player.addEventListener(
+    "error",
+    () => {
+      const err = player.error;
+      const msg = err ? `Video error: code ${err.code}` : "Could not play video";
+      showToast(msg, "error");
+    },
+    { once: true }
+  );
 }
 
 function closePlayer() {
