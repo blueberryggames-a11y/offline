@@ -1,5 +1,5 @@
 // ─── Cache version — bump to force update on all clients ──────────────────────
-const CACHE_NAME = "ytoffline-v5";
+const CACHE_NAME = "ytoffline-v6";
 const STATIC_ASSETS = ["./", "./index.html", "./app.js", "./manifest.json"];
 
 // ─── IndexedDB helpers (duplicated in SW — no shared scope with page) ─────────
@@ -45,27 +45,6 @@ self.addEventListener("activate", (event) => {
 });
 
 // ─── Fetch ────────────────────────────────────────────────────────────────────
-//
-// THE CORE SAFARI/IOS VIDEO FIX
-// ──────────────────────────────
-// Safari (all versions, all Apple devices including iPad in "desktop mode")
-// cannot play video from a blob: URL stored in IndexedDB with proper seeking
-// and duration display. The root cause:
-//
-//   Safari's AVFoundation media engine makes HTTP range requests (Range: bytes=N-M)
-//   to probe the video before displaying duration or enabling the seek bar.
-//   When the video "URL" is a blob: URL, these range requests can't be satisfied
-//   properly through the normal fetch path.
-//
-// THE SOLUTION:
-//   1. In app.js, instead of using blob: URLs, point the <video> at a fake
-//      URL like /sw-video/<id>.mp4
-//   2. The service worker intercepts those URLs and reads the blob from IDB
-//   3. For range requests: respond with 206 + correct Content-Range header
-//   4. For full requests: respond with 200 + Content-Length
-//   This gives Safari exactly what AVFoundation expects — proper HTTP semantics
-//   — even though everything is served from local storage.
-//
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
 
@@ -93,7 +72,9 @@ self.addEventListener("fetch", (event) => {
 
 async function handleVideoRequest(request, url) {
   // Extract video ID from path: /sw-video/<id>.mp4 → <id>
-  const id = url.pathname.replace("/sw-video/", "").replace(".mp4", "");
+  const id = decodeURIComponent(
+    url.pathname.replace("/sw-video/", "").replace(/\.mp4$/i, "")
+  );
 
   let video;
   try {
@@ -106,15 +87,17 @@ async function handleVideoRequest(request, url) {
     return new Response("Video not found", { status: 404 });
   }
 
-  // Ensure the blob has the correct MIME type
-  const blob = new Blob([video.blob], { type: "video/mp4" });
+  // Normalise: video.blob may already be a Blob or raw ArrayBuffer/bytes
+  const blob = video.blob instanceof Blob
+    ? new Blob([video.blob], { type: "video/mp4" })
+    : new Blob([video.blob], { type: "video/mp4" });
+
   const totalSize = blob.size;
 
   const rangeHeader = request.headers.get("range");
 
   if (rangeHeader) {
     // ── Range request (Safari's probe + seek requests) ─────────────────────
-    // Parse "bytes=start-end" (end may be absent meaning "to EOF")
     const match = /bytes=(\d+)-(\d*)/i.exec(rangeHeader);
     if (!match) {
       return new Response(null, {
@@ -126,9 +109,11 @@ async function handleVideoRequest(request, url) {
 
     const start = parseInt(match[1], 10);
     const end   = match[2] ? parseInt(match[2], 10) : totalSize - 1;
-    const chunkSize = end - start + 1;
+    // Clamp end to actual file size
+    const clampedEnd = Math.min(end, totalSize - 1);
+    const chunkSize  = clampedEnd - start + 1;
 
-    const chunk = blob.slice(start, end + 1, "video/mp4");
+    const chunk = blob.slice(start, clampedEnd + 1, "video/mp4");
 
     return new Response(chunk, {
       status: 206,
@@ -136,7 +121,7 @@ async function handleVideoRequest(request, url) {
       headers: {
         "Content-Type":   "video/mp4",
         "Content-Length": String(chunkSize),
-        "Content-Range":  `bytes ${start}-${end}/${totalSize}`,
+        "Content-Range":  `bytes ${start}-${clampedEnd}/${totalSize}`,
         "Accept-Ranges":  "bytes",
       },
     });
