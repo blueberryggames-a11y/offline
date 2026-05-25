@@ -5,7 +5,7 @@
 // blob.slice(start, end) is lazy — it doesn't read the data until .arrayBuffer()
 // is called on the slice, so only the requested chunk is ever in memory.
 
-const CACHE_NAME = "ytoffline-v10";
+const CACHE_NAME = "ytoffline-v11";
 const STATIC_ASSETS = ["./", "./index.html", "./app.js", "./manifest.json"];
 
 const DB_NAME    = "ytoffline";
