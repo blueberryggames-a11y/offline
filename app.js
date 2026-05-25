@@ -100,7 +100,7 @@ let serverOnline = false;
 
 async function checkServer() {
   try {
-    const res = await fetch(`${SERVER}/ping`, { 
+    const res = await fetch(`${SERVER}/ping`, {
       signal: AbortSignal.timeout(3000),
       headers: { "ngrok-skip-browser-warning": "1" },
     });
@@ -126,7 +126,7 @@ function updateServerBadge() {
 }
 
 // ─── UI State ─────────────────────────────────────────────────────────────────
-let currentView = "library"; // "library" | "player"
+let currentView = "library";
 let currentVideoId = null;
 let currentObjectURL = null;
 
@@ -150,7 +150,6 @@ async function handleDownload() {
     return;
   }
 
-  // Validate YouTube URL
   if (!url.includes("youtube.com") && !url.includes("youtu.be")) {
     showToast("Please enter a valid YouTube URL", "error");
     return;
@@ -159,7 +158,6 @@ async function handleDownload() {
   setDownloadState("fetching");
 
   try {
-    // Step 1: Get info
     const infoRes = await fetch(`${SERVER}/info`, {
       method: "POST",
       headers: NGROK_HEADERS,
@@ -168,11 +166,8 @@ async function handleDownload() {
     const info = await infoRes.json();
     if (!infoRes.ok) throw new Error(info.error || "Could not fetch video info");
 
-    // Show preview
     showPreview(info);
     setDownloadState("preview");
-
-    // Store for confirm
     window._pendingDownload = { url, info };
   } catch (err) {
     showToast(err.message, "error");
@@ -196,7 +191,6 @@ async function confirmDownload() {
       throw new Error(err.error || "Download failed");
     }
 
-    // Stream the response and show progress
     const reader = res.body.getReader();
     const contentLength = res.headers.get("Content-Length");
     let received = 0;
@@ -215,6 +209,7 @@ async function confirmDownload() {
       }
     }
 
+    // Always create blob with explicit video/mp4 type — Safari requires this
     const blob = new Blob(chunks, { type: "video/mp4" });
     await saveVideo(info, blob);
 
@@ -323,25 +318,50 @@ async function playVideo(id) {
   const video = await getVideo(id);
   if (!video) return;
 
-  if (currentObjectURL) URL.revokeObjectURL(currentObjectURL);
-  currentObjectURL = URL.createObjectURL(video.blob);
+  // Revoke previous URL
+  if (currentObjectURL) {
+    URL.revokeObjectURL(currentObjectURL);
+    currentObjectURL = null;
+  }
+
   currentVideoId = id;
 
   const player = document.getElementById("video-player");
-  player.src = currentObjectURL;
 
+  // Safari requires the blob to have an explicit video/mp4 type
+  // Re-wrap the stored blob to guarantee the correct MIME type
+  const safariBlob = new Blob([video.blob], { type: "video/mp4" });
+  currentObjectURL = URL.createObjectURL(safariBlob);
+
+  // Set title/meta before switching view
   document.getElementById("player-title").textContent = video.title;
   document.getElementById("player-meta").textContent =
     `${video.uploader || "Unknown"} · ${formatDuration(video.duration)} · ${formatSize(video.size)}`;
 
+  // Switch to player view first
   showView("player");
+
+  // Reset player completely before assigning new src — Safari needs this
+  player.pause();
+  player.removeAttribute("src");
+  player.load();
+
+  // Small delay lets Safari settle after load() before we assign a new src
+  await new Promise((r) => setTimeout(r, 50));
+
+  player.src = currentObjectURL;
+  player.load();
+
+  // Safari requires a user-gesture to call play() — tapping the card counts,
+  // but we catch the error silently if autoplay is blocked
   player.play().catch(() => {});
 }
 
 function closePlayer() {
   const player = document.getElementById("video-player");
   player.pause();
-  player.src = "";
+  player.removeAttribute("src");
+  player.load();
   if (currentObjectURL) {
     URL.revokeObjectURL(currentObjectURL);
     currentObjectURL = null;
@@ -361,7 +381,6 @@ function showToast(msg, type = "info") {
 async function init() {
   db = await openDB();
 
-  // Register service worker
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("./sw.js").catch(console.warn);
   }
@@ -371,7 +390,6 @@ async function init() {
 
   await renderLibrary();
 
-  // Enter key on URL input
   document.getElementById("url-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter") handleDownload();
   });
