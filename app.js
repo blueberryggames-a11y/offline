@@ -28,8 +28,6 @@ async function openDB() {
 }
 
 async function saveVideo(meta, blob) {
-  // Store as ArrayBuffer — avoids Safari SW blob-reading bugs
-  const arrayBuffer = await blob.arrayBuffer();
   const tx = db.transaction(STORE, "readwrite");
   tx.objectStore(STORE).put({
     id:        meta.id || Date.now().toString(),
@@ -38,7 +36,7 @@ async function saveVideo(meta, blob) {
     thumbnail: meta.thumbnail,
     uploader:  meta.uploader,
     savedAt:   Date.now(),
-    blob:      arrayBuffer,   // stored as ArrayBuffer
+    blob,
     size:      blob.size,
   });
   return new Promise((res, rej) => {
