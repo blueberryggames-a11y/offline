@@ -318,7 +318,7 @@ async function playVideo(id) {
   const video = await getVideo(id);
   if (!video) return;
 
-  // Revoke previous URL
+  // Revoke previous object URL to free memory
   if (currentObjectURL) {
     URL.revokeObjectURL(currentObjectURL);
     currentObjectURL = null;
@@ -328,8 +328,13 @@ async function playVideo(id) {
 
   const player = document.getElementById("video-player");
 
-  // FIX 1: Fully stop & detach any existing source before touching src
+  // Fully stop and clear the player before loading new content
   player.pause();
+
+  // FIX: Remove all existing <source> children (our new approach uses <source> not .src)
+  while (player.firstChild) {
+    player.removeChild(player.firstChild);
+  }
   player.removeAttribute("src");
   player.load();
 
@@ -341,33 +346,38 @@ async function playVideo(id) {
   // Switch to player view
   showView("player");
 
-  // FIX 2: Re-wrap blob with explicit video/mp4 MIME type — required by Safari
+  // Re-wrap blob with explicit video/mp4 MIME — Safari is strict about this
   const safariBlob = new Blob([video.blob], { type: "video/mp4" });
   currentObjectURL = URL.createObjectURL(safariBlob);
 
-  // FIX 3: Assign src ONCE — no double load() — then wait for canplay before play()
-  // Safari is strict: assigning src then calling load() twice causes silent failure
-  player.src = currentObjectURL;
+  // FIX: Use a <source> child element instead of setting player.src directly.
+  // This is the Apple-confirmed workaround for blob URL playback failures on iOS Safari.
+  // See: https://developer.apple.com/forums/thread/751063
+  const source = document.createElement("source");
+  source.type = "video/mp4";
+  source.src = currentObjectURL;
+  player.appendChild(source);
 
-  // FIX 4: Use canplay event to trigger play, not a blind setTimeout.
-  // This is the correct way to autoplay on Safari/iOS after a user gesture.
+  // FIX: Call load() AFTER appending the <source> element
+  player.load();
+
+  // Wait for canplay before attempting autoplay — safer than a timeout
   player.addEventListener(
     "canplay",
     () => {
       player.play().catch(() => {
-        // Autoplay blocked — user can tap the native controls to start
+        // Autoplay blocked — user can tap native controls
       });
     },
     { once: true }
   );
 
-  // FIX 5: Catch load errors and surface them instead of failing silently
+  // Surface errors visibly instead of silent broken icon
   player.addEventListener(
     "error",
     () => {
-      const err = player.error;
-      const msg = err ? `Video error: code ${err.code}` : "Could not play video";
-      showToast(msg, "error");
+      const code = player.error ? player.error.code : "?";
+      showToast(`Playback error (code ${code}) — try again`, "error");
     },
     { once: true }
   );
@@ -376,8 +386,14 @@ async function playVideo(id) {
 function closePlayer() {
   const player = document.getElementById("video-player");
   player.pause();
+
+  // Clean up all <source> children
+  while (player.firstChild) {
+    player.removeChild(player.firstChild);
+  }
   player.removeAttribute("src");
   player.load();
+
   if (currentObjectURL) {
     URL.revokeObjectURL(currentObjectURL);
     currentObjectURL = null;
