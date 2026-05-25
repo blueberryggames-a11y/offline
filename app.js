@@ -1,4 +1,4 @@
-// ─── Config ───────────────────────────────────────────────────────────────────
+// app.js
 const SERVER = "https://jogger-trustable-abdomen.ngrok-free.dev";
 const DB_NAME = "ytoffline";
 const DB_VERSION = 1;
@@ -9,7 +9,7 @@ const NGROK_HEADERS = {
   "ngrok-skip-browser-warning": "1",
 };
 
-// ─── IndexedDB ────────────────────────────────────────────────────────────────
+// ── IndexedDB ────────────────────────────────────────────────────────────────
 let db;
 
 async function openDB() {
@@ -23,11 +23,13 @@ async function openDB() {
       }
     };
     req.onsuccess = (e) => resolve(e.target.result);
-    req.onerror   = ()  => reject(req.error);
+    req.onerror   = () => reject(req.error);
   });
 }
 
 async function saveVideo(meta, blob) {
+  // Store as ArrayBuffer — avoids Safari SW blob-reading bugs
+  const arrayBuffer = await blob.arrayBuffer();
   const tx = db.transaction(STORE, "readwrite");
   tx.objectStore(STORE).put({
     id:        meta.id || Date.now().toString(),
@@ -36,7 +38,7 @@ async function saveVideo(meta, blob) {
     thumbnail: meta.thumbnail,
     uploader:  meta.uploader,
     savedAt:   Date.now(),
-    blob,
+    blob:      arrayBuffer,   // stored as ArrayBuffer
     size:      blob.size,
   });
   return new Promise((res, rej) => {
@@ -72,7 +74,7 @@ async function deleteVideo(id) {
   });
 }
 
-// ─── Utilities ────────────────────────────────────────────────────────────────
+// ── Utilities ────────────────────────────────────────────────────────────────
 function formatDuration(secs) {
   if (!secs) return "??:??";
   const h = Math.floor(secs / 3600);
@@ -96,7 +98,7 @@ function formatDate(ts) {
   });
 }
 
-// ─── Server Status ────────────────────────────────────────────────────────────
+// ── Server Status ─────────────────────────────────────────────────────────────
 let serverOnline = false;
 
 async function checkServer() {
@@ -126,7 +128,7 @@ function updateServerBadge() {
   }
 }
 
-// ─── UI State ─────────────────────────────────────────────────────────────────
+// ── UI State ──────────────────────────────────────────────────────────────────
 let currentView    = "library";
 let currentVideoId = null;
 
@@ -136,7 +138,7 @@ function showView(view) {
   currentView = view;
 }
 
-// ─── Download Flow ────────────────────────────────────────────────────────────
+// ── Download Flow ─────────────────────────────────────────────────────────────
 async function handleDownload() {
   if (!serverOnline) {
     showToast("Server is offline. Start it on your PC first.", "error");
@@ -248,7 +250,7 @@ function hidePreview() {
   document.getElementById("confirm-bar").classList.add("hidden");
 }
 
-// ─── Library ──────────────────────────────────────────────────────────────────
+// ── Library ───────────────────────────────────────────────────────────────────
 async function renderLibrary() {
   const grid   = document.getElementById("video-grid");
   const empty  = document.getElementById("empty-state");
@@ -287,113 +289,47 @@ async function deleteVideoUI(id) {
   await renderLibrary();
 }
 
-// ─── Tap-to-play overlay ──────────────────────────────────────────────────────
-function showTapToPlay() {
-  let overlay = document.getElementById("play-overlay");
-  if (!overlay) {
-    overlay = document.createElement("div");
-    overlay.id = "play-overlay";
-    overlay.style.cssText = `
-      position:absolute;inset:0;display:flex;flex-direction:column;
-      align-items:center;justify-content:center;
-      background:rgba(0,0,0,0.45);z-index:10;cursor:pointer;
-      -webkit-tap-highlight-color:transparent;
-    `;
-    document.querySelector(".video-container").appendChild(overlay);
-  }
-  overlay.innerHTML = `
-    <div style="width:68px;height:68px;background:rgba(255,255,255,0.18);
-                border-radius:50%;display:flex;align-items:center;
-                justify-content:center;backdrop-filter:blur(6px);
-                -webkit-backdrop-filter:blur(6px);">
-      <div style="width:0;height:0;border-style:solid;
-                  border-width:15px 0 15px 28px;
-                  border-color:transparent transparent transparent #fff;
-                  margin-left:6px;"></div>
-    </div>
-    <div style="color:rgba(255,255,255,0.75);font-size:13px;margin-top:14px;
-                font-family:sans-serif;letter-spacing:0.3px;">Tap to play</div>
-  `;
-  overlay.onclick = () => {
-    const player = document.getElementById("video-player");
-    if (!player) return;
-    player.play().then(() => {
-      removeOverlay();
-    }).catch((err) => {
-      showToast("Tap play in the video controls", "error");
-      removeOverlay();
-    });
-  };
-}
-
-function removeOverlay() {
-  const o = document.getElementById("play-overlay");
-  if (o) o.remove();
-}
-
-// ─── Player ───────────────────────────────────────────────────────────────────
+// ── Player ────────────────────────────────────────────────────────────────────
 async function playVideo(id) {
   const video = await getVideo(id);
   if (!video) return;
 
   currentVideoId = id;
-
   document.getElementById("player-title").textContent = video.title;
   document.getElementById("player-meta").textContent =
     `${video.uploader || "Unknown"} · ${formatDuration(video.duration)} · ${formatSize(video.size)}`;
 
   showView("player");
 
-  // Replace the <video> element to give Safari a fresh AVFoundation context
+  // Fresh <video> element — gives Safari a clean AVFoundation context
   const container = document.querySelector(".video-container");
-  const oldPlayer  = document.getElementById("video-player");
-  const player     = document.createElement("video");
+  const oldPlayer = document.getElementById("video-player");
+  const player    = document.createElement("video");
 
   player.id       = "video-player";
   player.controls = true;
-  player.setAttribute("playsinline",        "");
+  player.setAttribute("playsinline", "");
   player.setAttribute("webkit-playsinline", "");
-  player.setAttribute("x-webkit-airplay",   "allow");
-  player.setAttribute("preload",            "auto");
+  player.setAttribute("x-webkit-airplay", "allow");
+  player.setAttribute("preload", "auto");
 
   container.replaceChild(player, oldPlayer);
 
-  // Use SW proxy URL for proper range-request semantics on Safari/iOS
-  const swVideoURL = `/sw-video/${encodeURIComponent(id)}.mp4`;
+  // SW proxy URL — the SW intercepts this and serves from IDB with proper
+  // range-request responses. This is what makes Safari show duration + seek.
+  const src = `/sw-video/${encodeURIComponent(id)}.mp4`;
 
+  // Use <source> child — more reliable than .src on iOS Safari
   const source = document.createElement("source");
   source.type  = "video/mp4";
-  source.src   = swVideoURL;
+  source.src   = src;
   player.appendChild(source);
 
   player.load();
 
-  // Stall detector: if nothing happens in 6s, show tap-to-play anyway
-  // so the user isn't stuck on a blank screen
-  const stallTimer = setTimeout(() => {
-    if (!player.paused || player.readyState >= 2) return; // already playing or ready
-    showTapToPlay();
-  }, 6000);
-
-  player.addEventListener("canplay", () => {
-    clearTimeout(stallTimer);
-    // Try autoplay; if it fails (iOS blocks it), show the tap overlay
-    player.play().catch(() => {
-      showTapToPlay();
-    });
-  }, { once: true });
-
-  // If autoplay succeeds, make sure overlay is gone
-  player.addEventListener("playing", () => {
-    clearTimeout(stallTimer);
-    removeOverlay();
-  }, { once: true });
-
-  player.addEventListener("error", () => {
-    clearTimeout(stallTimer);
-    removeOverlay();
-    const code = player.error ? player.error.code : "?";
-    showToast(`Playback error (code ${code})`, "error");
+  player.addEventListener("error", (e) => {
+    const err = player.error;
+    showToast(`Video error ${err ? err.code : "?"}`, "error");
   });
 }
 
@@ -405,11 +341,10 @@ function closePlayer() {
     player.removeAttribute("src");
     player.load();
   }
-  removeOverlay();
   showView("library");
 }
 
-// ─── Toast ────────────────────────────────────────────────────────────────────
+// ── Toast ─────────────────────────────────────────────────────────────────────
 function showToast(msg, type = "info") {
   const t = document.getElementById("toast");
   t.textContent = msg;
@@ -417,7 +352,7 @@ function showToast(msg, type = "info") {
   setTimeout(() => t.classList.remove("show"), 3500);
 }
 
-// ─── Init ─────────────────────────────────────────────────────────────────────
+// ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
   db = await openDB();
 
@@ -425,25 +360,21 @@ async function init() {
     try {
       const reg = await navigator.serviceWorker.register("./sw.js");
 
-      // If a new SW is installing, wait for it to activate before proceeding
+      // Wait for SW to activate if it's new
       const sw = reg.installing || reg.waiting;
       if (sw) {
         await new Promise((resolve) => {
-          sw.addEventListener("statechange", function handler() {
-            if (sw.state === "activated") {
-              sw.removeEventListener("statechange", handler);
-              resolve();
-            }
+          sw.addEventListener("statechange", function h() {
+            if (sw.state === "activated") { sw.removeEventListener("statechange", h); resolve(); }
           });
         });
       }
 
-      // Ensure this page is claimed by the SW (handles first-load case)
+      // Wait for SW to claim this page if not yet controlled
       if (!navigator.serviceWorker.controller) {
         await new Promise((resolve) => {
           navigator.serviceWorker.addEventListener("controllerchange", resolve, { once: true });
-          // If claim never fires (already controlled), resolve after tick
-          setTimeout(resolve, 500);
+          setTimeout(resolve, 1000); // safety fallback
         });
       }
     } catch (e) {
