@@ -454,6 +454,8 @@
     /* ── Player View ──────────────────────────────────────── */
     #view-player {
       background: #000;
+      /* FIX: Explicit height for Safari — flex alone is not enough */
+      height: 100%;
     }
 
     .player-header {
@@ -508,6 +510,9 @@
       align-items: center;
       justify-content: center;
       min-height: 0;
+      /* FIX: Safari needs explicit height propagation in flex children */
+      height: 0;
+      overflow: hidden;
     }
 
     #video-player {
@@ -516,6 +521,8 @@
       max-height: 100%;
       object-fit: contain;
       outline: none;
+      /* FIX: Safari requires -webkit-fill-available for proper height inside flex */
+      -webkit-tap-highlight-color: transparent;
     }
 
     /* ── Toast ────────────────────────────────────────────── */
@@ -646,7 +653,7 @@
       </div>
     </div>
     <div class="video-container">
-      <video id="video-player" controls playsinline></video>
+      <video id="video-player" controls playsinline webkit-playsinline x-webkit-airplay="allow"></video>
     </div>
   </div>
 </div>
