@@ -1,4 +1,4 @@
-const CACHE_NAME = "ytoffline-v1";
+const CACHE_NAME = "ytoffline-v2";
 const STATIC_ASSETS = [
   "./",
   "./index.html",
@@ -24,12 +24,11 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
-// Fetch: only cache same-origin requests — never intercept API/ngrok calls
+// Fetch: serve from cache, fall back to network
 self.addEventListener("fetch", (event) => {
+  // Don't intercept backend API calls or cross-origin requests
   const url = new URL(event.request.url);
-
-  // Let ALL cross-origin requests (ngrok, youtube, etc.) pass through untouched
-  if (url.origin !== self.location.origin) return;
+  if (url.hostname === "localhost" || url.port === "5000") return;
 
   event.respondWith(
     caches.match(event.request).then((cached) => cached || fetch(event.request))
