@@ -317,7 +317,7 @@ async function playVideo(id) {
 
   // SW proxy URL — the SW intercepts this and serves from IDB with proper
   // range-request responses. This is what makes Safari show duration + seek.
-  const src = `/sw-video/${encodeURIComponent(id)}.mp4`;
+  const src = `./sw-video/${encodeURIComponent(id)}.mp4`;
 
   // Use <source> child — more reliable than .src on iOS Safari
   const source = document.createElement("source");
