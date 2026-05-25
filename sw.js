@@ -1,5 +1,5 @@
 // ─── Cache version — bump to force update on all clients ──────────────────────
-const CACHE_NAME = "ytoffline-v6";
+const CACHE_NAME = "ytoffline-v7";
 const STATIC_ASSETS = ["./", "./index.html", "./app.js", "./manifest.json"];
 
 // ─── IndexedDB helpers (duplicated in SW — no shared scope with page) ─────────
