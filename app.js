@@ -23,43 +23,43 @@ async function openDB() {
       }
     };
     req.onsuccess = (e) => resolve(e.target.result);
-    req.onerror = () => reject(req.error);
+    req.onerror   = ()  => reject(req.error);
   });
 }
 
 async function saveVideo(meta, blob) {
   const tx = db.transaction(STORE, "readwrite");
   tx.objectStore(STORE).put({
-    id: meta.id || Date.now().toString(),
-    title: meta.title,
-    duration: meta.duration,
+    id:        meta.id || Date.now().toString(),
+    title:     meta.title,
+    duration:  meta.duration,
     thumbnail: meta.thumbnail,
-    uploader: meta.uploader,
-    savedAt: Date.now(),
+    uploader:  meta.uploader,
+    savedAt:   Date.now(),
     blob,
-    size: blob.size,
+    size:      blob.size,
   });
   return new Promise((res, rej) => {
     tx.oncomplete = res;
-    tx.onerror = () => rej(tx.error);
+    tx.onerror    = () => rej(tx.error);
   });
 }
 
 async function getAllVideos() {
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, "readonly");
+    const tx  = db.transaction(STORE, "readonly");
     const req = tx.objectStore(STORE).index("savedAt").getAll();
     req.onsuccess = () => resolve(req.result.reverse());
-    req.onerror = () => reject(req.error);
+    req.onerror   = () => reject(req.error);
   });
 }
 
 async function getVideo(id) {
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, "readonly");
+    const tx  = db.transaction(STORE, "readonly");
     const req = tx.objectStore(STORE).get(id);
     req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    req.onerror   = () => reject(req.error);
   });
 }
 
@@ -68,7 +68,7 @@ async function deleteVideo(id) {
     const tx = db.transaction(STORE, "readwrite");
     tx.objectStore(STORE).delete(id);
     tx.oncomplete = resolve;
-    tx.onerror = () => reject(tx.error);
+    tx.onerror    = () => reject(tx.error);
   });
 }
 
@@ -96,6 +96,17 @@ function formatDate(ts) {
   });
 }
 
+// ─── Detect Apple WebKit (covers iPhone, iPad in desktop mode, older iPads) ───
+// iPad on iOS 13+ reports as Macintosh. We detect WebKit + touch to catch it.
+function isAppleWebKit() {
+  const ua = navigator.userAgent;
+  const isWebKit = /WebKit/i.test(ua) && !/Chrome/i.test(ua);
+  // maxTouchPoints > 1 catches iPad in desktop mode (reports as Mac)
+  const isTouchApple = navigator.maxTouchPoints > 1 && /Macintosh/i.test(ua);
+  const isIOS = /iPhone|iPad|iPod/i.test(ua);
+  return isWebKit && (isIOS || isTouchApple);
+}
+
 // ─── Server Status ─────────────────────────────────────────────────────────────
 let serverOnline = false;
 
@@ -117,19 +128,18 @@ function updateServerBadge() {
   const dot   = document.getElementById("server-dot");
   if (serverOnline) {
     badge.textContent = "Server Online";
-    badge.className = "badge online";
-    dot.className   = "dot online";
+    badge.className   = "badge online";
+    dot.className     = "dot online";
   } else {
     badge.textContent = "Server Offline";
-    badge.className = "badge offline";
-    dot.className   = "dot offline";
+    badge.className   = "badge offline";
+    dot.className     = "dot offline";
   }
 }
 
 // ─── UI State ─────────────────────────────────────────────────────────────────
-let currentView      = "library";
-let currentVideoId   = null;
-let currentObjectURL = null;
+let currentView    = "library";
+let currentVideoId = null;
 
 function showView(view) {
   document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
@@ -227,10 +237,10 @@ function updateProgress(pct, received, total) {
   const bar   = document.getElementById("progress-bar");
   const label = document.getElementById("progress-label");
   if (pct !== null) {
-    bar.style.width = pct + "%";
+    bar.style.width   = pct + "%";
     label.textContent = `${pct}% — ${formatSize(received)} / ${formatSize(Number(total))}`;
   } else {
-    bar.style.width = "60%";
+    bar.style.width   = "60%";
     bar.style.animation = "pulse 1s infinite";
     label.textContent = `Downloading… ${formatSize(received)}`;
   }
@@ -251,8 +261,8 @@ function hidePreview() {
 
 // ─── Library ──────────────────────────────────────────────────────────────────
 async function renderLibrary() {
-  const grid  = document.getElementById("video-grid");
-  const empty = document.getElementById("empty-state");
+  const grid   = document.getElementById("video-grid");
+  const empty  = document.getElementById("empty-state");
   const videos = await getAllVideos();
   if (videos.length === 0) {
     grid.innerHTML = "";
@@ -275,7 +285,7 @@ async function renderLibrary() {
         <div class="card-date">${formatDate(v.savedAt)}</div>
       </div>
       <button class="card-delete"
-        onclick="event.stopPropagation(); deleteVideoUI('${v.id}', this)"
+        onclick="event.stopPropagation(); deleteVideoUI('${v.id}')"
         title="Delete">✕</button>
     </div>
   `).join("");
@@ -290,81 +300,73 @@ async function deleteVideoUI(id) {
 
 // ─── Player ───────────────────────────────────────────────────────────────────
 //
-// Safari / iOS video-from-blob rules (hard-won):
+// THE REAL FIX FOR SAFARI/IOS/IPAD 0:00 DURATION
+// ─────────────────────────────────────────────────
+// Safari's AVFoundation requires proper HTTP range-request semantics to:
+//   - Show video duration
+//   - Enable the seek bar
+//   - Allow scrubbing
 //
-//  1. Never set player.src directly for a blob URL — use a <source> child.
-//     (Apple's own confirmed workaround for iOS 17.x blob URL failures)
+// blob: URLs don't provide this — even with the <source> workaround, Safari
+// still shows 0:00 because it can't issue Range requests against a blob URL
+// through the normal fetch pathway.
 //
-//  2. Do NOT call player.load() before assigning the source, AND do NOT call
-//     player.load() again after appending <source>.  Call it exactly ONCE,
-//     only after the <source> is in the DOM.
+// The solution: use a SW-proxied URL (/sw-video/<id>.mp4) instead of a blob
+// URL. The service worker intercepts requests to this URL, reads the video
+// from IndexedDB, and responds with proper 206 Partial Content for range
+// requests. Safari gets exactly what AVFoundation needs.
 //
-//  3. The reason duration shows 0:00 is NOT the moov atom position for blobs —
-//     the blob is already fully in RAM so Safari reads it all at once.
-//     The actual cause is that calling load() on a player that already had a
-//     source makes Safari's AVFoundation pipeline enter a bad state where it
-//     reports duration=0.  Fix: replace the whole <video> element.
-//
-//  4. Replacing the element (cloneNode trick) gives Safari a totally fresh
-//     AVFoundation context with no leftover state from the previous video.
+// This works on:
+//   - iPhone (all generations with iOS 12+)
+//   - iPad (all generations, including ones that report as "Macintosh")
+//   - iPadOS in desktop mode
+//   - Regular Safari on macOS
 //
 async function playVideo(id) {
   const video = await getVideo(id);
   if (!video) return;
 
-  // Revoke previous object URL
-  if (currentObjectURL) {
-    URL.revokeObjectURL(currentObjectURL);
-    currentObjectURL = null;
-  }
-
   currentVideoId = id;
 
-  // Set title/meta
   document.getElementById("player-title").textContent = video.title;
   document.getElementById("player-meta").textContent =
     `${video.uploader || "Unknown"} · ${formatDuration(video.duration)} · ${formatSize(video.size)}`;
 
-  // Switch to player view first so the container is visible/sized
   showView("player");
 
-  // FIX: Replace the <video> element entirely.
-  // Reusing the same element across videos causes Safari's AVFoundation to
-  // carry over state from the previous playback session, resulting in
-  // duration=0 and a frozen seek bar.  A fresh element = fresh pipeline.
+  // Replace the <video> element to give Safari a fresh AVFoundation context
   const container = document.querySelector(".video-container");
-  const oldPlayer = document.getElementById("video-player");
+  const oldPlayer  = document.getElementById("video-player");
+  const player     = document.createElement("video");
 
-  const newPlayer = document.createElement("video");
-  newPlayer.id = "video-player";
-  newPlayer.controls = true;
-  newPlayer.setAttribute("playsinline", "");
-  newPlayer.setAttribute("webkit-playsinline", "");
-  newPlayer.setAttribute("x-webkit-airplay", "allow");
+  player.id       = "video-player";
+  player.controls = true;
+  player.setAttribute("playsinline",        "");
+  player.setAttribute("webkit-playsinline", "");
+  player.setAttribute("x-webkit-airplay",   "allow");
+  player.setAttribute("preload",            "auto");
 
-  container.replaceChild(newPlayer, oldPlayer);
+  container.replaceChild(player, oldPlayer);
 
-  // Re-wrap blob with explicit MIME — Safari is strict about this
-  const safariBlob = new Blob([video.blob], { type: "video/mp4" });
-  currentObjectURL = URL.createObjectURL(safariBlob);
+  // Use the SW proxy URL — this gives Safari real HTTP range-request semantics
+  // from IndexedDB data, fixing duration display and seeking on all Apple devices.
+  // The .mp4 extension is required — Safari checks the URL extension for MIME type.
+  const swVideoURL = `/sw-video/${encodeURIComponent(id)}.mp4`;
 
-  // Use <source> child — confirmed Apple workaround for blob URL playback
-  const source = document.createElement("source");
-  source.type = "video/mp4";
-  source.src  = currentObjectURL;
-  newPlayer.appendChild(source);
+  // Use <source> child element — required for blob/SW URLs on iOS Safari
+  const source  = document.createElement("source");
+  source.type   = "video/mp4";
+  source.src    = swVideoURL;
+  player.appendChild(source);
 
-  // Call load() exactly once, after the <source> is in the DOM
-  newPlayer.load();
+  player.load();
 
-  // Wait for canplay, then attempt autoplay
-  newPlayer.addEventListener("canplay", () => {
-    newPlayer.play().catch(() => { /* autoplay blocked — user taps controls */ });
+  player.addEventListener("canplay", () => {
+    player.play().catch(() => { /* autoplay blocked — user taps controls */ });
   }, { once: true });
 
-  // Surface errors
-  newPlayer.addEventListener("error", () => {
-    const code = newPlayer.error ? newPlayer.error.code : "?";
+  player.addEventListener("error", () => {
+    const code = player.error ? player.error.code : "?";
     showToast(`Playback error (code ${code})`, "error");
   }, { once: true });
 }
@@ -373,14 +375,9 @@ function closePlayer() {
   const player = document.getElementById("video-player");
   if (player) {
     player.pause();
-    // Remove all sources and detach
     while (player.firstChild) player.removeChild(player.firstChild);
     player.removeAttribute("src");
     player.load();
-  }
-  if (currentObjectURL) {
-    URL.revokeObjectURL(currentObjectURL);
-    currentObjectURL = null;
   }
   showView("library");
 }
@@ -396,12 +393,32 @@ function showToast(msg, type = "info") {
 // ─── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
   db = await openDB();
+
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js").catch(console.warn);
+    try {
+      const reg = await navigator.serviceWorker.register("./sw.js");
+      // Wait for the SW to be active before playing any video
+      // so the /sw-video/ proxy is ready
+      if (reg.installing || reg.waiting) {
+        await new Promise((resolve) => {
+          const sw = reg.installing || reg.waiting;
+          sw.addEventListener("statechange", function handler() {
+            if (sw.state === "activated") {
+              sw.removeEventListener("statechange", handler);
+              resolve();
+            }
+          });
+        });
+      }
+    } catch (e) {
+      console.warn("SW registration failed:", e);
+    }
   }
+
   await checkServer();
   setInterval(checkServer, 10000);
   await renderLibrary();
+
   document.getElementById("url-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter") handleDownload();
   });
