@@ -3,7 +3,7 @@
 // Safari's SW context has trouble with Blob objects retrieved from IDB.
 // ArrayBuffer.slice() is reliable and matches the proven Phil Nash approach.
 
-const CACHE_NAME = "ytoffline-v8";
+const CACHE_NAME = "ytoffline-v9";
 const STATIC_ASSETS = ["./", "./index.html", "./app.js", "./manifest.json"];
 
 const DB_NAME    = "ytoffline";
@@ -48,7 +48,7 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
 
-  if (url.pathname.startsWith("/sw-video/")) {
+  if (url.pathname.includes("/sw-video/")) {
     event.respondWith(handleVideoRequest(event.request, url));
     return;
   }
@@ -64,7 +64,7 @@ self.addEventListener("fetch", (event) => {
 
 async function handleVideoRequest(request, url) {
   const id = decodeURIComponent(
-    url.pathname.replace("/sw-video/", "").replace(/\.mp4$/i, "")
+    url.pathname.split("/sw-video/")[1].replace(/\.mp4$/i, "")
   );
 
   let video;
