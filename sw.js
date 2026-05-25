@@ -1,9 +1,11 @@
-// sw.js — v7
-// Key fix: use ArrayBuffer (not Blob) for range slicing.
-// Safari's SW context has trouble with Blob objects retrieved from IDB.
-// ArrayBuffer.slice() is reliable and matches the proven Phil Nash approach.
+// sw.js — v9
+// Fix for large videos on mobile Safari:
+// Never load the full ArrayBuffer into memory.
+// Instead: get the blob's total size, then slice ONLY the requested bytes.
+// blob.slice(start, end) is lazy — it doesn't read the data until .arrayBuffer()
+// is called on the slice, so only the requested chunk is ever in memory.
 
-const CACHE_NAME = "ytoffline-v9";
+const CACHE_NAME = "ytoffline-v10";
 const STATIC_ASSETS = ["./", "./index.html", "./app.js", "./manifest.json"];
 
 const DB_NAME    = "ytoffline";
@@ -26,6 +28,14 @@ async function swGetVideo(id) {
     req.onsuccess = () => resolve(req.result);
     req.onerror   = () => reject(req.error);
   });
+}
+
+// Normalise whatever is stored into a Blob (doesn't read data, just wraps)
+function toBlob(stored) {
+  if (stored instanceof Blob) return stored;
+  if (stored instanceof ArrayBuffer) return new Blob([stored], { type: "video/mp4" });
+  // Uint8Array / Buffer / etc.
+  return new Blob([stored], { type: "video/mp4" });
 }
 
 self.addEventListener("install", (event) => {
@@ -74,31 +84,17 @@ async function handleVideoRequest(request, url) {
     return new Response("DB error: " + e, { status: 500 });
   }
 
-  if (!video) {
+  if (!video || !video.blob) {
     return new Response("Video not found", { status: 404 });
   }
 
-  // Convert whatever is stored to ArrayBuffer.
-  // The page stores a Blob; we need ArrayBuffer for reliable slicing in SW.
-  let arrayBuffer;
-  try {
-    if (video.blob instanceof Blob) {
-      arrayBuffer = await video.blob.arrayBuffer();
-    } else if (video.blob instanceof ArrayBuffer) {
-      arrayBuffer = video.blob;
-    } else {
-      // Fallback: try treating it as a blob-like object
-      arrayBuffer = await new Blob([video.blob]).arrayBuffer();
-    }
-  } catch (e) {
-    return new Response("Failed to read video data: " + e, { status: 500 });
-  }
+  // Wrap in a Blob — this is O(0), no data is read yet
+  const blob      = toBlob(video.blob);
+  const totalSize = blob.size;
 
-  const totalSize = arrayBuffer.byteLength;
   const rangeHeader = request.headers.get("range");
 
   if (rangeHeader) {
-    // Parse bytes=start-end  (end is optional)
     const match = /^bytes=(\d+)-(\d*)$/i.exec(rangeHeader);
     if (!match) {
       return new Response(null, {
@@ -107,25 +103,28 @@ async function handleVideoRequest(request, url) {
       });
     }
 
-    const start = Number(match[1]);
-    const end   = match[2] ? Number(match[2]) : totalSize - 1;
+    const start      = Number(match[1]);
+    const end        = match[2] ? Number(match[2]) : totalSize - 1;
     const clampedEnd = Math.min(end, totalSize - 1);
-    const chunk  = arrayBuffer.slice(start, clampedEnd + 1);
 
-    return new Response(chunk, {
+    // KEY: slice the blob first (no memory cost), then read only that slice
+    const slicedBlob = blob.slice(start, clampedEnd + 1, "video/mp4");
+    const chunkBuffer = await slicedBlob.arrayBuffer();
+
+    return new Response(chunkBuffer, {
       status: 206,
       statusText: "Partial Content",
       headers: {
         "Content-Type":   "video/mp4",
-        "Content-Length": String(chunk.byteLength),
+        "Content-Length": String(chunkBuffer.byteLength),
         "Content-Range":  `bytes ${start}-${clampedEnd}/${totalSize}`,
         "Accept-Ranges":  "bytes",
       },
     });
   }
 
-  // Full request
-  return new Response(arrayBuffer, {
+  // Full request — stream the blob directly, no ArrayBuffer conversion
+  return new Response(blob, {
     status: 200,
     headers: {
       "Content-Type":   "video/mp4",
