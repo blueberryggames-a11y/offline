@@ -1,5 +1,5 @@
 // ─── Config ───────────────────────────────────────────────────────────────────
-const SERVER = "https://operate-moonrise-riddance.ngrok-free.dev";
+const SERVER = "https://jogger-trustable-abdomen.ngrok-free.dev";
 const DB_NAME = "ytoffline";
 const DB_VERSION = 1;
 const STORE = "videos";
