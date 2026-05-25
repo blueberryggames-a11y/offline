@@ -24,11 +24,12 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
-// Fetch: serve from cache, fall back to network
+// Fetch: only cache same-origin requests — never intercept API/ngrok calls
 self.addEventListener("fetch", (event) => {
-  // Don't intercept backend API calls or cross-origin requests
   const url = new URL(event.request.url);
-  if (url.hostname === "localhost" || url.port === "5000") return;
+
+  // Let ALL cross-origin requests (ngrok, youtube, etc.) pass through untouched
+  if (url.origin !== self.location.origin) return;
 
   event.respondWith(
     caches.match(event.request).then((cached) => cached || fetch(event.request))
