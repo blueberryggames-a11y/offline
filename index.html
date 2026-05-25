@@ -513,7 +513,7 @@
       /* FIX: Safari needs explicit height propagation in flex children */
       height: 0;
       overflow: hidden;
-      position: relative; /* needed for tap-to-play overlay positioning */
+      position: relative;
     }
 
     #video-player {
@@ -553,10 +553,6 @@
     .toast.error { border-color: var(--accent); color: var(--accent); }
 
     /* ── Animations ───────────────────────────────────────── */
-    @keyframes spin {
-      0% { transform: rotate(0deg); }
-      100% { transform: rotate(360deg); }
-    }
 
     @keyframes pulse {
       0%, 100% { width: 40%; }
