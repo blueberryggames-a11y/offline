@@ -96,26 +96,7 @@ function formatDate(ts) {
   });
 }
 
-// ─── Wait for Service Worker to control this page ─────────────────────────────
-// This is the critical fix for mobile: the page might be loaded before the SW
-// has claimed it. If navigator.serviceWorker.controller is null, we wait for
-// the 'controllerchange' event before trying to play via /sw-video/.
-async function waitForSWController() {
-  if (!("serviceWorker" in navigator)) return;
-
-  // Already controlled — we're good
-  if (navigator.serviceWorker.controller) return;
-
-  // Not yet controlled: wait for claim() to fire
-  await new Promise((resolve) => {
-    navigator.serviceWorker.addEventListener("controllerchange", resolve, { once: true });
-
-    // Safety timeout — if SW never claims us in 4s, proceed anyway and hope for the best
-    setTimeout(resolve, 4000);
-  });
-}
-
-// ─── Server Status ─────────────────────────────────────────────────────────────
+// ─── Server Status ────────────────────────────────────────────────────────────
 let serverOnline = false;
 
 async function checkServer() {
@@ -155,7 +136,7 @@ function showView(view) {
   currentView = view;
 }
 
-// ─── Download Flow ─────────────────────────────────────────────────────────────
+// ─── Download Flow ────────────────────────────────────────────────────────────
 async function handleDownload() {
   if (!serverOnline) {
     showToast("Server is offline. Start it on your PC first.", "error");
@@ -306,22 +287,51 @@ async function deleteVideoUI(id) {
   await renderLibrary();
 }
 
+// ─── Tap-to-play overlay ──────────────────────────────────────────────────────
+function showTapToPlay() {
+  let overlay = document.getElementById("play-overlay");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.id = "play-overlay";
+    overlay.style.cssText = `
+      position:absolute;inset:0;display:flex;flex-direction:column;
+      align-items:center;justify-content:center;
+      background:rgba(0,0,0,0.45);z-index:10;cursor:pointer;
+      -webkit-tap-highlight-color:transparent;
+    `;
+    document.querySelector(".video-container").appendChild(overlay);
+  }
+  overlay.innerHTML = `
+    <div style="width:68px;height:68px;background:rgba(255,255,255,0.18);
+                border-radius:50%;display:flex;align-items:center;
+                justify-content:center;backdrop-filter:blur(6px);
+                -webkit-backdrop-filter:blur(6px);">
+      <div style="width:0;height:0;border-style:solid;
+                  border-width:15px 0 15px 28px;
+                  border-color:transparent transparent transparent #fff;
+                  margin-left:6px;"></div>
+    </div>
+    <div style="color:rgba(255,255,255,0.75);font-size:13px;margin-top:14px;
+                font-family:sans-serif;letter-spacing:0.3px;">Tap to play</div>
+  `;
+  overlay.onclick = () => {
+    const player = document.getElementById("video-player");
+    if (!player) return;
+    player.play().then(() => {
+      removeOverlay();
+    }).catch((err) => {
+      showToast("Tap play in the video controls", "error");
+      removeOverlay();
+    });
+  };
+}
+
+function removeOverlay() {
+  const o = document.getElementById("play-overlay");
+  if (o) o.remove();
+}
+
 // ─── Player ───────────────────────────────────────────────────────────────────
-//
-// THE REAL FIX FOR SAFARI/IOS MOBILE VIDEO PLAYBACK
-// ──────────────────────────────────────────────────
-// Two bugs hit mobile simultaneously:
-//
-// 1. SW NOT YET CONTROLLING THE PAGE
-//    On first load (or hard reload), the SW may be active but hasn't claimed
-//    the page yet. Requests to /sw-video/ go to the network → 404.
-//    Fix: waitForSWController() before setting video src.
-//
-// 2. AUTOPLAY BLOCKED ON IOS
-//    iOS Safari blocks play() unless triggered directly by a user gesture.
-//    The canplay event fires asynchronously — no longer counts as user gesture.
-//    Fix: Show a tap-to-play overlay; the tap IS a user gesture so play() works.
-//
 async function playVideo(id) {
   const video = await getVideo(id);
   if (!video) return;
@@ -348,113 +358,43 @@ async function playVideo(id) {
 
   container.replaceChild(player, oldPlayer);
 
-  // Show loading indicator while waiting for SW
-  showPlayOverlay("loading");
-
-  // ── CRITICAL FIX 1: Wait for SW to control the page before using /sw-video/ ──
-  await waitForSWController();
-
-  // Use the SW proxy URL — gives Safari real HTTP range-request semantics
-  // from IndexedDB data, fixing duration display and seeking on all Apple devices.
+  // Use SW proxy URL for proper range-request semantics on Safari/iOS
   const swVideoURL = `/sw-video/${encodeURIComponent(id)}.mp4`;
 
-  // Use <source> child element — required for blob/SW URLs on iOS Safari
-  const source  = document.createElement("source");
-  source.type   = "video/mp4";
-  source.src    = swVideoURL;
+  const source = document.createElement("source");
+  source.type  = "video/mp4";
+  source.src   = swVideoURL;
   player.appendChild(source);
 
   player.load();
 
-  // ── CRITICAL FIX 2: Tap-to-play overlay for iOS autoplay restrictions ──────
-  // On iOS, play() must be called synchronously inside a user gesture handler.
-  // We show a big play button overlay; tapping it calls play() directly.
+  // Stall detector: if nothing happens in 6s, show tap-to-play anyway
+  // so the user isn't stuck on a blank screen
+  const stallTimer = setTimeout(() => {
+    if (!player.paused || player.readyState >= 2) return; // already playing or ready
+    showTapToPlay();
+  }, 6000);
+
   player.addEventListener("canplay", () => {
-    // Hide loading, show play button (tap = user gesture → play works)
-    showPlayOverlay("play");
+    clearTimeout(stallTimer);
+    // Try autoplay; if it fails (iOS blocks it), show the tap overlay
+    player.play().catch(() => {
+      showTapToPlay();
+    });
   }, { once: true });
 
-  player.addEventListener("loadedmetadata", () => {
-    // Duration is now known — hide loading spinner if still showing
-    if (document.getElementById("play-overlay") &&
-        document.getElementById("play-overlay").dataset.state === "loading") {
-      showPlayOverlay("play");
-    }
+  // If autoplay succeeds, make sure overlay is gone
+  player.addEventListener("playing", () => {
+    clearTimeout(stallTimer);
+    removeOverlay();
   }, { once: true });
 
-  player.addEventListener("error", (e) => {
+  player.addEventListener("error", () => {
+    clearTimeout(stallTimer);
+    removeOverlay();
     const code = player.error ? player.error.code : "?";
-    hidePlayOverlay();
     showToast(`Playback error (code ${code})`, "error");
   });
-
-  // If video loads and plays fine (non-iOS), hide overlay
-  player.addEventListener("playing", () => {
-    hidePlayOverlay();
-  }, { once: true });
-}
-
-// ─── Tap-to-play overlay ──────────────────────────────────────────────────────
-function showPlayOverlay(state) {
-  let overlay = document.getElementById("play-overlay");
-  if (!overlay) {
-    overlay = document.createElement("div");
-    overlay.id = "play-overlay";
-    overlay.style.cssText = `
-      position: absolute;
-      inset: 0;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      background: rgba(0,0,0,0.55);
-      z-index: 10;
-      cursor: pointer;
-      -webkit-tap-highlight-color: transparent;
-    `;
-    document.querySelector(".video-container").style.position = "relative";
-    document.querySelector(".video-container").appendChild(overlay);
-  }
-  overlay.dataset.state = state;
-
-  if (state === "loading") {
-    overlay.innerHTML = `
-      <div style="width:52px;height:52px;border:4px solid rgba(255,255,255,0.2);
-                  border-top-color:#fff;border-radius:50%;
-                  animation:spin 0.8s linear infinite;"></div>
-      <div style="color:rgba(255,255,255,0.7);font-size:13px;margin-top:14px;
-                  font-family:sans-serif;">Loading…</div>
-    `;
-    overlay.onclick = null;
-  } else {
-    overlay.innerHTML = `
-      <div style="width:64px;height:64px;background:rgba(255,255,255,0.15);
-                  border-radius:50%;display:flex;align-items:center;
-                  justify-content:center;backdrop-filter:blur(4px);">
-        <div style="width:0;height:0;border-style:solid;
-                    border-width:14px 0 14px 26px;
-                    border-color:transparent transparent transparent #fff;
-                    margin-left:5px;"></div>
-      </div>
-      <div style="color:rgba(255,255,255,0.7);font-size:13px;margin-top:14px;
-                  font-family:sans-serif;">Tap to play</div>
-    `;
-    overlay.onclick = () => {
-      const player = document.getElementById("video-player");
-      if (player) {
-        player.play().then(() => {
-          hidePlayOverlay();
-        }).catch((err) => {
-          showToast("Playback blocked: " + err.message, "error");
-        });
-      }
-    };
-  }
-}
-
-function hidePlayOverlay() {
-  const overlay = document.getElementById("play-overlay");
-  if (overlay) overlay.remove();
 }
 
 function closePlayer() {
@@ -465,7 +405,7 @@ function closePlayer() {
     player.removeAttribute("src");
     player.load();
   }
-  hidePlayOverlay();
+  removeOverlay();
   showView("library");
 }
 
@@ -485,16 +425,25 @@ async function init() {
     try {
       const reg = await navigator.serviceWorker.register("./sw.js");
 
-      // Wait for the SW to be active so /sw-video/ proxy is ready
-      if (reg.installing || reg.waiting) {
+      // If a new SW is installing, wait for it to activate before proceeding
+      const sw = reg.installing || reg.waiting;
+      if (sw) {
         await new Promise((resolve) => {
-          const sw = reg.installing || reg.waiting;
           sw.addEventListener("statechange", function handler() {
             if (sw.state === "activated") {
               sw.removeEventListener("statechange", handler);
               resolve();
             }
           });
+        });
+      }
+
+      // Ensure this page is claimed by the SW (handles first-load case)
+      if (!navigator.serviceWorker.controller) {
+        await new Promise((resolve) => {
+          navigator.serviceWorker.addEventListener("controllerchange", resolve, { once: true });
+          // If claim never fires (already controlled), resolve after tick
+          setTimeout(resolve, 500);
         });
       }
     } catch (e) {
