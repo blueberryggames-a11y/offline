@@ -552,6 +552,11 @@
     .toast.error { border-color: var(--accent); color: var(--accent); }
 
     /* ── Animations ───────────────────────────────────────── */
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
     @keyframes pulse {
       0%, 100% { width: 40%; }
       50% { width: 80%; }
