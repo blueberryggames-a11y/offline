@@ -1,5 +1,5 @@
 // app.js
-const SERVER = "https://jogger-trustable-abdomen.ngrok-free.dev";
+const SERVER = "https://starlet-upbeat-outscore.ngrok-free.dev";
 const DB_NAME = "ytoffline";
 const DB_VERSION = 1;
 const STORE = "videos";
@@ -38,6 +38,7 @@ async function saveVideo(meta, blob) {
     savedAt:   Date.now(),
     blob,
     size:      blob.size,
+    faststart: true,  // backend applies -movflags +faststart on all new downloads
   });
   return new Promise((res, rej) => {
     tx.oncomplete = res;
@@ -287,6 +288,57 @@ async function deleteVideoUI(id) {
   await renderLibrary();
 }
 
+// ── Remux (fix moov atom position for Safari) ────────────────────────────────
+// Existing videos may have moov atom at end of file — Safari needs it at start
+// to show duration. We send the blob to the backend's /remux endpoint which
+// runs ffmpeg -movflags +faststart and returns the fixed file.
+async function remuxIfNeeded(video) {
+  // Already fixed
+  if (video.faststart) return video.blob;
+
+  if (!serverOnline) {
+    showToast("Server offline — duration may show 0:00. Connect server to fix.", "error");
+    return video.blob;
+  }
+
+  showToast("Fixing video for iOS playback…", "info");
+
+  try {
+    const formData = new FormData();
+    const blob = video.blob instanceof Blob
+      ? video.blob
+      : new Blob([video.blob], { type: "video/mp4" });
+    formData.append("video", blob, "video.mp4");
+
+    const res = await fetch(`${SERVER}/remux`, {
+      method: "POST",
+      headers: { "ngrok-skip-browser-warning": "1" },
+      body: formData,
+    });
+
+    if (!res.ok) throw new Error("Remux failed: " + res.status);
+
+    const fixedBlob = await res.blob();
+
+    // Save the fixed version back to IDB so we never remux again
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).put({
+      ...video,
+      blob: fixedBlob,
+      size: fixedBlob.size,
+      faststart: true,
+    });
+    await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = rej; });
+
+    showToast("Fixed! Playing now.", "success");
+    return fixedBlob;
+  } catch (e) {
+    console.warn("Remux failed:", e);
+    showToast("Could not fix video — duration may show 0:00", "error");
+    return video.blob;
+  }
+}
+
 // ── Player ────────────────────────────────────────────────────────────────────
 async function playVideo(id) {
   const video = await getVideo(id);
@@ -313,11 +365,15 @@ async function playVideo(id) {
 
   container.replaceChild(player, oldPlayer);
 
-  // SW proxy URL — the SW intercepts this and serves from IDB with proper
-  // range-request responses. This is what makes Safari show duration + seek.
+  // If video hasn't been remuxed yet, fix it now (moves moov atom to front)
+  // so Safari can read duration without seeking to end of file.
+  const blobToPlay = await remuxIfNeeded(video);
+
+  // Use SW proxy — gives Safari proper range-request semantics from IDB.
+  // We still need this even after remux so seeking works without loading
+  // the full file into memory.
   const src = `./sw-video/${encodeURIComponent(id)}.mp4`;
 
-  // Use <source> child — more reliable than .src on iOS Safari
   const source = document.createElement("source");
   source.type  = "video/mp4";
   source.src   = src;
