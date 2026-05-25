@@ -96,15 +96,23 @@ function formatDate(ts) {
   });
 }
 
-// ─── Detect Apple WebKit (covers iPhone, iPad in desktop mode, older iPads) ───
-// iPad on iOS 13+ reports as Macintosh. We detect WebKit + touch to catch it.
-function isAppleWebKit() {
-  const ua = navigator.userAgent;
-  const isWebKit = /WebKit/i.test(ua) && !/Chrome/i.test(ua);
-  // maxTouchPoints > 1 catches iPad in desktop mode (reports as Mac)
-  const isTouchApple = navigator.maxTouchPoints > 1 && /Macintosh/i.test(ua);
-  const isIOS = /iPhone|iPad|iPod/i.test(ua);
-  return isWebKit && (isIOS || isTouchApple);
+// ─── Wait for Service Worker to control this page ─────────────────────────────
+// This is the critical fix for mobile: the page might be loaded before the SW
+// has claimed it. If navigator.serviceWorker.controller is null, we wait for
+// the 'controllerchange' event before trying to play via /sw-video/.
+async function waitForSWController() {
+  if (!("serviceWorker" in navigator)) return;
+
+  // Already controlled — we're good
+  if (navigator.serviceWorker.controller) return;
+
+  // Not yet controlled: wait for claim() to fire
+  await new Promise((resolve) => {
+    navigator.serviceWorker.addEventListener("controllerchange", resolve, { once: true });
+
+    // Safety timeout — if SW never claims us in 4s, proceed anyway and hope for the best
+    setTimeout(resolve, 4000);
+  });
 }
 
 // ─── Server Status ─────────────────────────────────────────────────────────────
@@ -300,27 +308,19 @@ async function deleteVideoUI(id) {
 
 // ─── Player ───────────────────────────────────────────────────────────────────
 //
-// THE REAL FIX FOR SAFARI/IOS/IPAD 0:00 DURATION
-// ─────────────────────────────────────────────────
-// Safari's AVFoundation requires proper HTTP range-request semantics to:
-//   - Show video duration
-//   - Enable the seek bar
-//   - Allow scrubbing
+// THE REAL FIX FOR SAFARI/IOS MOBILE VIDEO PLAYBACK
+// ──────────────────────────────────────────────────
+// Two bugs hit mobile simultaneously:
 //
-// blob: URLs don't provide this — even with the <source> workaround, Safari
-// still shows 0:00 because it can't issue Range requests against a blob URL
-// through the normal fetch pathway.
+// 1. SW NOT YET CONTROLLING THE PAGE
+//    On first load (or hard reload), the SW may be active but hasn't claimed
+//    the page yet. Requests to /sw-video/ go to the network → 404.
+//    Fix: waitForSWController() before setting video src.
 //
-// The solution: use a SW-proxied URL (/sw-video/<id>.mp4) instead of a blob
-// URL. The service worker intercepts requests to this URL, reads the video
-// from IndexedDB, and responds with proper 206 Partial Content for range
-// requests. Safari gets exactly what AVFoundation needs.
-//
-// This works on:
-//   - iPhone (all generations with iOS 12+)
-//   - iPad (all generations, including ones that report as "Macintosh")
-//   - iPadOS in desktop mode
-//   - Regular Safari on macOS
+// 2. AUTOPLAY BLOCKED ON IOS
+//    iOS Safari blocks play() unless triggered directly by a user gesture.
+//    The canplay event fires asynchronously — no longer counts as user gesture.
+//    Fix: Show a tap-to-play overlay; the tap IS a user gesture so play() works.
 //
 async function playVideo(id) {
   const video = await getVideo(id);
@@ -348,9 +348,14 @@ async function playVideo(id) {
 
   container.replaceChild(player, oldPlayer);
 
-  // Use the SW proxy URL — this gives Safari real HTTP range-request semantics
+  // Show loading indicator while waiting for SW
+  showPlayOverlay("loading");
+
+  // ── CRITICAL FIX 1: Wait for SW to control the page before using /sw-video/ ──
+  await waitForSWController();
+
+  // Use the SW proxy URL — gives Safari real HTTP range-request semantics
   // from IndexedDB data, fixing duration display and seeking on all Apple devices.
-  // The .mp4 extension is required — Safari checks the URL extension for MIME type.
   const swVideoURL = `/sw-video/${encodeURIComponent(id)}.mp4`;
 
   // Use <source> child element — required for blob/SW URLs on iOS Safari
@@ -361,14 +366,95 @@ async function playVideo(id) {
 
   player.load();
 
+  // ── CRITICAL FIX 2: Tap-to-play overlay for iOS autoplay restrictions ──────
+  // On iOS, play() must be called synchronously inside a user gesture handler.
+  // We show a big play button overlay; tapping it calls play() directly.
   player.addEventListener("canplay", () => {
-    player.play().catch(() => { /* autoplay blocked — user taps controls */ });
+    // Hide loading, show play button (tap = user gesture → play works)
+    showPlayOverlay("play");
   }, { once: true });
 
-  player.addEventListener("error", () => {
-    const code = player.error ? player.error.code : "?";
-    showToast(`Playback error (code ${code})`, "error");
+  player.addEventListener("loadedmetadata", () => {
+    // Duration is now known — hide loading spinner if still showing
+    if (document.getElementById("play-overlay") &&
+        document.getElementById("play-overlay").dataset.state === "loading") {
+      showPlayOverlay("play");
+    }
   }, { once: true });
+
+  player.addEventListener("error", (e) => {
+    const code = player.error ? player.error.code : "?";
+    hidePlayOverlay();
+    showToast(`Playback error (code ${code})`, "error");
+  });
+
+  // If video loads and plays fine (non-iOS), hide overlay
+  player.addEventListener("playing", () => {
+    hidePlayOverlay();
+  }, { once: true });
+}
+
+// ─── Tap-to-play overlay ──────────────────────────────────────────────────────
+function showPlayOverlay(state) {
+  let overlay = document.getElementById("play-overlay");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.id = "play-overlay";
+    overlay.style.cssText = `
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0,0,0,0.55);
+      z-index: 10;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    `;
+    document.querySelector(".video-container").style.position = "relative";
+    document.querySelector(".video-container").appendChild(overlay);
+  }
+  overlay.dataset.state = state;
+
+  if (state === "loading") {
+    overlay.innerHTML = `
+      <div style="width:52px;height:52px;border:4px solid rgba(255,255,255,0.2);
+                  border-top-color:#fff;border-radius:50%;
+                  animation:spin 0.8s linear infinite;"></div>
+      <div style="color:rgba(255,255,255,0.7);font-size:13px;margin-top:14px;
+                  font-family:sans-serif;">Loading…</div>
+    `;
+    overlay.onclick = null;
+  } else {
+    overlay.innerHTML = `
+      <div style="width:64px;height:64px;background:rgba(255,255,255,0.15);
+                  border-radius:50%;display:flex;align-items:center;
+                  justify-content:center;backdrop-filter:blur(4px);">
+        <div style="width:0;height:0;border-style:solid;
+                    border-width:14px 0 14px 26px;
+                    border-color:transparent transparent transparent #fff;
+                    margin-left:5px;"></div>
+      </div>
+      <div style="color:rgba(255,255,255,0.7);font-size:13px;margin-top:14px;
+                  font-family:sans-serif;">Tap to play</div>
+    `;
+    overlay.onclick = () => {
+      const player = document.getElementById("video-player");
+      if (player) {
+        player.play().then(() => {
+          hidePlayOverlay();
+        }).catch((err) => {
+          showToast("Playback blocked: " + err.message, "error");
+        });
+      }
+    };
+  }
+}
+
+function hidePlayOverlay() {
+  const overlay = document.getElementById("play-overlay");
+  if (overlay) overlay.remove();
 }
 
 function closePlayer() {
@@ -379,6 +465,7 @@ function closePlayer() {
     player.removeAttribute("src");
     player.load();
   }
+  hidePlayOverlay();
   showView("library");
 }
 
@@ -397,8 +484,8 @@ async function init() {
   if ("serviceWorker" in navigator) {
     try {
       const reg = await navigator.serviceWorker.register("./sw.js");
-      // Wait for the SW to be active before playing any video
-      // so the /sw-video/ proxy is ready
+
+      // Wait for the SW to be active so /sw-video/ proxy is ready
       if (reg.installing || reg.waiting) {
         await new Promise((resolve) => {
           const sw = reg.installing || reg.waiting;
