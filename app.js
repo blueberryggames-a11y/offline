@@ -4,7 +4,6 @@ const DB_NAME = "ytoffline";
 const DB_VERSION = 1;
 const STORE = "videos";
 
-// ngrok free tier shows an interstitial — this header bypasses it
 const NGROK_HEADERS = {
   "Content-Type": "application/json",
   "ngrok-skip-browser-warning": "1",
@@ -92,7 +91,9 @@ function formatSize(bytes) {
 }
 
 function formatDate(ts) {
-  return new Date(ts).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  return new Date(ts).toLocaleDateString("en-US", {
+    month: "short", day: "numeric", year: "numeric",
+  });
 }
 
 // ─── Server Status ─────────────────────────────────────────────────────────────
@@ -113,21 +114,21 @@ async function checkServer() {
 
 function updateServerBadge() {
   const badge = document.getElementById("server-badge");
-  const dot = document.getElementById("server-dot");
+  const dot   = document.getElementById("server-dot");
   if (serverOnline) {
     badge.textContent = "Server Online";
     badge.className = "badge online";
-    dot.className = "dot online";
+    dot.className   = "dot online";
   } else {
     badge.textContent = "Server Offline";
     badge.className = "badge offline";
-    dot.className = "dot offline";
+    dot.className   = "dot offline";
   }
 }
 
 // ─── UI State ─────────────────────────────────────────────────────────────────
-let currentView = "library";
-let currentVideoId = null;
+let currentView      = "library";
+let currentVideoId   = null;
 let currentObjectURL = null;
 
 function showView(view) {
@@ -142,30 +143,20 @@ async function handleDownload() {
     showToast("Server is offline. Start it on your PC first.", "error");
     return;
   }
-
   const urlInput = document.getElementById("url-input");
   const url = urlInput.value.trim();
-  if (!url) {
-    showToast("Paste a YouTube URL first", "error");
-    return;
-  }
-
+  if (!url) { showToast("Paste a YouTube URL first", "error"); return; }
   if (!url.includes("youtube.com") && !url.includes("youtu.be")) {
     showToast("Please enter a valid YouTube URL", "error");
     return;
   }
-
   setDownloadState("fetching");
-
   try {
     const infoRes = await fetch(`${SERVER}/info`, {
-      method: "POST",
-      headers: NGROK_HEADERS,
-      body: JSON.stringify({ url }),
+      method: "POST", headers: NGROK_HEADERS, body: JSON.stringify({ url }),
     });
     const info = await infoRes.json();
     if (!infoRes.ok) throw new Error(info.error || "Could not fetch video info");
-
     showPreview(info);
     setDownloadState("preview");
     window._pendingDownload = { url, info };
@@ -178,41 +169,31 @@ async function handleDownload() {
 async function confirmDownload() {
   const { url, info } = window._pendingDownload;
   setDownloadState("downloading");
-
   try {
     const res = await fetch(`${SERVER}/download`, {
-      method: "POST",
-      headers: NGROK_HEADERS,
-      body: JSON.stringify({ url }),
+      method: "POST", headers: NGROK_HEADERS, body: JSON.stringify({ url }),
     });
-
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: "Download failed" }));
       throw new Error(err.error || "Download failed");
     }
-
     const reader = res.body.getReader();
     const contentLength = res.headers.get("Content-Length");
     let received = 0;
     const chunks = [];
-
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       chunks.push(value);
       received += value.length;
       if (contentLength) {
-        const pct = Math.round((received / contentLength) * 100);
-        updateProgress(pct, received, contentLength);
+        updateProgress(Math.round((received / contentLength) * 100), received, contentLength);
       } else {
         updateProgress(null, received, null);
       }
     }
-
-    // Always create blob with explicit video/mp4 type — Safari requires this
     const blob = new Blob(chunks, { type: "video/mp4" });
     await saveVideo(info, blob);
-
     showToast(`"${info.title}" saved!`, "success");
     setDownloadState("idle");
     document.getElementById("url-input").value = "";
@@ -225,32 +206,25 @@ async function confirmDownload() {
 }
 
 function setDownloadState(state) {
-  const btn = document.getElementById("dl-btn");
-  const progress = document.getElementById("progress-wrap");
+  const btn        = document.getElementById("dl-btn");
+  const progress   = document.getElementById("progress-wrap");
   const confirmBar = document.getElementById("confirm-bar");
-
   if (state === "idle") {
-    btn.textContent = "Fetch Info";
-    btn.disabled = false;
-    progress.classList.add("hidden");
-    confirmBar.classList.add("hidden");
+    btn.textContent = "Fetch Info"; btn.disabled = false;
+    progress.classList.add("hidden"); confirmBar.classList.add("hidden");
   } else if (state === "fetching") {
-    btn.textContent = "Fetching…";
-    btn.disabled = true;
+    btn.textContent = "Fetching…"; btn.disabled = true;
   } else if (state === "preview") {
-    btn.textContent = "Fetch Info";
-    btn.disabled = false;
+    btn.textContent = "Fetch Info"; btn.disabled = false;
     confirmBar.classList.remove("hidden");
   } else if (state === "downloading") {
-    btn.textContent = "Fetch Info";
-    btn.disabled = true;
-    progress.classList.remove("hidden");
-    confirmBar.classList.add("hidden");
+    btn.textContent = "Fetch Info"; btn.disabled = true;
+    progress.classList.remove("hidden"); confirmBar.classList.add("hidden");
   }
 }
 
 function updateProgress(pct, received, total) {
-  const bar = document.getElementById("progress-bar");
+  const bar   = document.getElementById("progress-bar");
   const label = document.getElementById("progress-label");
   if (pct !== null) {
     bar.style.width = pct + "%";
@@ -263,12 +237,11 @@ function updateProgress(pct, received, total) {
 }
 
 function showPreview(info) {
-  const box = document.getElementById("preview-box");
   document.getElementById("preview-thumb").src = info.thumbnail || "";
   document.getElementById("preview-title").textContent = info.title;
   document.getElementById("preview-meta").textContent =
     `${info.uploader || "Unknown"} · ${formatDuration(info.duration)}`;
-  box.classList.remove("hidden");
+  document.getElementById("preview-box").classList.remove("hidden");
 }
 
 function hidePreview() {
@@ -278,21 +251,21 @@ function hidePreview() {
 
 // ─── Library ──────────────────────────────────────────────────────────────────
 async function renderLibrary() {
-  const grid = document.getElementById("video-grid");
+  const grid  = document.getElementById("video-grid");
   const empty = document.getElementById("empty-state");
   const videos = await getAllVideos();
-
   if (videos.length === 0) {
     grid.innerHTML = "";
     empty.classList.remove("hidden");
     return;
   }
-
   empty.classList.add("hidden");
   grid.innerHTML = videos.map((v) => `
     <div class="video-card" onclick="playVideo('${v.id}')">
       <div class="card-thumb">
-        ${v.thumbnail ? `<img src="${v.thumbnail}" alt="" loading="lazy">` : `<div class="thumb-placeholder"></div>`}
+        ${v.thumbnail
+          ? `<img src="${v.thumbnail}" alt="" loading="lazy">`
+          : `<div class="thumb-placeholder"></div>`}
         <div class="card-duration">${formatDuration(v.duration)}</div>
         <div class="card-play-icon">▶</div>
       </div>
@@ -301,12 +274,14 @@ async function renderLibrary() {
         <div class="card-meta">${v.uploader || "Unknown"} · ${formatSize(v.size)}</div>
         <div class="card-date">${formatDate(v.savedAt)}</div>
       </div>
-      <button class="card-delete" onclick="event.stopPropagation(); deleteVideoUI('${v.id}', this)" title="Delete">✕</button>
+      <button class="card-delete"
+        onclick="event.stopPropagation(); deleteVideoUI('${v.id}', this)"
+        title="Delete">✕</button>
     </div>
   `).join("");
 }
 
-async function deleteVideoUI(id, btn) {
+async function deleteVideoUI(id) {
   if (!confirm("Delete this video from your device?")) return;
   await deleteVideo(id);
   showToast("Video deleted", "success");
@@ -314,11 +289,30 @@ async function deleteVideoUI(id, btn) {
 }
 
 // ─── Player ───────────────────────────────────────────────────────────────────
+//
+// Safari / iOS video-from-blob rules (hard-won):
+//
+//  1. Never set player.src directly for a blob URL — use a <source> child.
+//     (Apple's own confirmed workaround for iOS 17.x blob URL failures)
+//
+//  2. Do NOT call player.load() before assigning the source, AND do NOT call
+//     player.load() again after appending <source>.  Call it exactly ONCE,
+//     only after the <source> is in the DOM.
+//
+//  3. The reason duration shows 0:00 is NOT the moov atom position for blobs —
+//     the blob is already fully in RAM so Safari reads it all at once.
+//     The actual cause is that calling load() on a player that already had a
+//     source makes Safari's AVFoundation pipeline enter a bad state where it
+//     reports duration=0.  Fix: replace the whole <video> element.
+//
+//  4. Replacing the element (cloneNode trick) gives Safari a totally fresh
+//     AVFoundation context with no leftover state from the previous video.
+//
 async function playVideo(id) {
   const video = await getVideo(id);
   if (!video) return;
 
-  // Revoke previous object URL to free memory
+  // Revoke previous object URL
   if (currentObjectURL) {
     URL.revokeObjectURL(currentObjectURL);
     currentObjectURL = null;
@@ -326,74 +320,64 @@ async function playVideo(id) {
 
   currentVideoId = id;
 
-  const player = document.getElementById("video-player");
-
-  // Fully stop and clear the player before loading new content
-  player.pause();
-
-  // FIX: Remove all existing <source> children (our new approach uses <source> not .src)
-  while (player.firstChild) {
-    player.removeChild(player.firstChild);
-  }
-  player.removeAttribute("src");
-  player.load();
-
   // Set title/meta
   document.getElementById("player-title").textContent = video.title;
   document.getElementById("player-meta").textContent =
     `${video.uploader || "Unknown"} · ${formatDuration(video.duration)} · ${formatSize(video.size)}`;
 
-  // Switch to player view
+  // Switch to player view first so the container is visible/sized
   showView("player");
 
-  // Re-wrap blob with explicit video/mp4 MIME — Safari is strict about this
+  // FIX: Replace the <video> element entirely.
+  // Reusing the same element across videos causes Safari's AVFoundation to
+  // carry over state from the previous playback session, resulting in
+  // duration=0 and a frozen seek bar.  A fresh element = fresh pipeline.
+  const container = document.querySelector(".video-container");
+  const oldPlayer = document.getElementById("video-player");
+
+  const newPlayer = document.createElement("video");
+  newPlayer.id = "video-player";
+  newPlayer.controls = true;
+  newPlayer.setAttribute("playsinline", "");
+  newPlayer.setAttribute("webkit-playsinline", "");
+  newPlayer.setAttribute("x-webkit-airplay", "allow");
+
+  container.replaceChild(newPlayer, oldPlayer);
+
+  // Re-wrap blob with explicit MIME — Safari is strict about this
   const safariBlob = new Blob([video.blob], { type: "video/mp4" });
   currentObjectURL = URL.createObjectURL(safariBlob);
 
-  // FIX: Use a <source> child element instead of setting player.src directly.
-  // This is the Apple-confirmed workaround for blob URL playback failures on iOS Safari.
-  // See: https://developer.apple.com/forums/thread/751063
+  // Use <source> child — confirmed Apple workaround for blob URL playback
   const source = document.createElement("source");
   source.type = "video/mp4";
-  source.src = currentObjectURL;
-  player.appendChild(source);
+  source.src  = currentObjectURL;
+  newPlayer.appendChild(source);
 
-  // FIX: Call load() AFTER appending the <source> element
-  player.load();
+  // Call load() exactly once, after the <source> is in the DOM
+  newPlayer.load();
 
-  // Wait for canplay before attempting autoplay — safer than a timeout
-  player.addEventListener(
-    "canplay",
-    () => {
-      player.play().catch(() => {
-        // Autoplay blocked — user can tap native controls
-      });
-    },
-    { once: true }
-  );
+  // Wait for canplay, then attempt autoplay
+  newPlayer.addEventListener("canplay", () => {
+    newPlayer.play().catch(() => { /* autoplay blocked — user taps controls */ });
+  }, { once: true });
 
-  // Surface errors visibly instead of silent broken icon
-  player.addEventListener(
-    "error",
-    () => {
-      const code = player.error ? player.error.code : "?";
-      showToast(`Playback error (code ${code}) — try again`, "error");
-    },
-    { once: true }
-  );
+  // Surface errors
+  newPlayer.addEventListener("error", () => {
+    const code = newPlayer.error ? newPlayer.error.code : "?";
+    showToast(`Playback error (code ${code})`, "error");
+  }, { once: true });
 }
 
 function closePlayer() {
   const player = document.getElementById("video-player");
-  player.pause();
-
-  // Clean up all <source> children
-  while (player.firstChild) {
-    player.removeChild(player.firstChild);
+  if (player) {
+    player.pause();
+    // Remove all sources and detach
+    while (player.firstChild) player.removeChild(player.firstChild);
+    player.removeAttribute("src");
+    player.load();
   }
-  player.removeAttribute("src");
-  player.load();
-
   if (currentObjectURL) {
     URL.revokeObjectURL(currentObjectURL);
     currentObjectURL = null;
@@ -412,16 +396,12 @@ function showToast(msg, type = "info") {
 // ─── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
   db = await openDB();
-
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("./sw.js").catch(console.warn);
   }
-
   await checkServer();
   setInterval(checkServer, 10000);
-
   await renderLibrary();
-
   document.getElementById("url-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter") handleDownload();
   });
